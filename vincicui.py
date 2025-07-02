@@ -1,223 +1,512 @@
 import os
-import random
-protected_spot=[]
+import sys
+import threading
+import time
+
+def beep():
+    sys.stdout.write('\a')
+    sys.stdout.flush()
+
 # Setup number of players
-num_players = int(input("Enter number of players (1 to 5): "))
-while num_players < 1 or num_players > 5:
-    print("Invalid input. Please enter a number between 1 and 5.")
-    num_players = int(input("Enter number of players (1 to 5): "))
+num_players = int(input("Enter number of players (2 to 5): "))
+while num_players < 2 or num_players > 5:
+    print("Invalid input. Please enter a number between 2 and 5.")
+    beep()
+    num_players = int(input("Enter number of players (2 to 5): "))
 
 players = {}
-colors = ["\033[91m", "\033[94m", "\033[92m", "\033[95m", "\033[93m"]  # red, blue, green, purple, yellow
+colors = ["\033[41m\033[97m", "\033[43m\033[30m", "\033[42m\033[30m", "\033[44m\033[97m", "\033[45m\033[97m"]
 
-# If Single Player, assign AI
-if num_players == 1:
-    player_name = input("Enter your name: ")
-    players[1] = {'name': player_name, 'symbol': f"{colors[0]}P1\033[0m", 'points': 0}
-    players[2] = {'name': "AI Bot", 'symbol': f"{colors[1]}P2\033[0m", 'points': 0}
-    num_players = 2
-    ai_player = 2
-else:
-    for i in range(1, num_players + 1):
-        name = input(f"Enter Player {i} Name: ")
-        players[i] = {'name': name, 'symbol': f"{colors[i - 1]}P{i}\033[0m", 'points': 0}
-    ai_player = None
+for i in range(1, num_players + 1):
+    name = input(f"Enter Player {i} Name: ")
+    players[i] = {
+        'name': name,
+        'color': colors[i - 1],
+        'lines': set(),
+        'triangles': set(),
+        'squares': set(),
+        'score': 0,
+        'hints_used': 0  # Track hints per player
+    }
 
-# Initial spots
-spots = {i:" " for i in range(1,18)}
+spots = {i: {"R": None, "L": None} for i in range(1, 18)}
+move_history = []
 
-def draw_board(spots):
-    board2 = (
-        f"|-----|-----|₁  {spots[1]}|₂  {spots[2]}|₃  {spots[3]}|\n"
-        f"|-----|-----|₄  {spots[4]}|₅  {spots[5]}|₆  {spots[6]}|\n"
-        f"|₇  {spots[7]}|₈  {spots[8]}|₉  {spots[9]}|₁₀ {spots[10]}|₁₁ {spots[11]}|\n"
-        f"|₁₂ {spots[12]}|₁₃ {spots[13]}|₁₄ {spots[14]}|-----|-----|\n"
-        f"|₁₅ {spots[15]}|₁₆ {spots[16]}|₁₇ {spots[17]}|-----|-----|"
-    )
-    print(board2)
+
+
+def get_display(spot_num, side):
+    val = spots[spot_num][side]
+    base = f"{spot_num:1}"
+    if val is None:
+        return f"\033[1;97m {base} \033[0m"
+    else:
+        color = players[val]['color']
+        return f"\033[1;107m{color} {base} \033[0m"
+
+def draw_custom_board():
+    def cell(c):
+        return f"\033[1;97m {c}\033[0m"
+    print("\n╔════╦════╦════╦════╦════╗")
+    print(f"║ -- ║ -- ║{cell(get_display(7,'R'))}║{cell(get_display(6,'R'))}║{cell(get_display(5,'R'))}║  R")
+    print("╠════╬════╬════╬════╣════╣")
+    print(f"║ -- ║ -- ║{cell(get_display(8,'R'))}║{cell(get_display(1,'R'))}║{cell(get_display(4,'R'))}║")
+    print("╠════╬════╬════╬════╬════╣")
+    print(f"║{cell(get_display(3,'L'))}║{cell(get_display(2,'L'))}║{cell(get_display(9,'R'))}║{cell(get_display(2,'R'))}║{cell(get_display(3,'R'))}║")
+    print("╠════╬════╬════╬════╬════╣")
+    print(f"║{cell(get_display(4,'L'))}║{cell(get_display(1,'L'))}║{cell(get_display(8,'L'))}║ -- ║ -- ║")
+    print("╠════╬════╬════╬════╬════╣")
+    print(f"║{cell(get_display(5,'L'))}║{cell(get_display(6,'L'))}║{cell(get_display(7,'L'))}║ -- ║ -- ║  L")
+    print("╚════╩════╩════╩════╩════╝\n")
+
+def draw_score_board():
+    print("\nCurrent Scores:")
+    for pid in players:
+        score = players[pid]['score']
+        print(f"{players[pid]['color']}  {players[pid]['name'].upper()} (P{pid}) -> {score} pts \033[0m")
+
+def count_player_spots():
+    counts = {pid: 0 for pid in players}
+    for spot in spots.values():
+        for side in ['R', 'L']:
+            if spot[side] in counts:
+                counts[spot[side]] += 1
+    return counts
+
 def check_turn(turn):
-    player_num = (turn % num_players) + 1
-    return players[player_num]['symbol'], player_num
+    return (turn % num_players) + 1
 
-def TallyPoints(player_num):
-    symbol = players[player_num]['symbol']
-    points = 0
+def valid_spot_9(player_num):
+    original = spots[9].copy()
+    spots[9]["R"] = player_num  # simulate placing for validation
 
     lines = [
-        [1, 2, 3], [4, 5, 6], [7, 8, 9], [12, 13, 14], [15, 16, 17],
-        [1, 5, 11], [2, 5, 10], [3, 6, 11], [7, 12, 15], [8, 13, 16], [9, 14, 17],
-        [1, 4, 9], [3, 5, 9], [7, 13, 17], [9, 13, 15],[8,9,10],[9,10,11],[4,9,14],[5,9,13]
+        [(1, 'R'), (5, 'R'), (9, 'R')],
+        [(5, 'L'), (1, 'L'), (9, 'R')],
+        [(7, 'R'), (8, 'R'), (9, 'R')],
+        [(3, 'R'), (2, 'R'), (9, 'R')],
+        [(1, 'L'), (9, 'R'), (1, 'R')],
+        [(3, 'L'), (2, 'L'), (9, 'R')],
+        [(7, 'L'), (8, 'L'), (9, 'R')],
+        [(8, 'R'), (9, 'R'), (8, 'L')],
+        [(2, 'L'), (9, 'R'), (2, 'R')]
     ]
 
-    squares = [[1,2,4,5],[3,2,6,5],[4,9,5,10],[5,10,6,11],
-        [7, 8, 12, 13], [8, 9, 13, 14],
-        [12, 13, 15, 16], [13, 14, 16, 17]
-    ]
+    valid = any(
+        all(spots[spot][side] == player_num for (spot, side) in line)
+        for line in lines
+    )
 
+    spots[9] = original  # restore original value
+    return valid
+
+def update_score(player_num):
+    points = 0
+    lines = [
+        [(7, 'R'), (6, 'R'), (5, 'R')], [(8, 'R'), (1, 'R'), (4, 'R')], [(9, 'R'), (2, 'R'), (3, 'R')], [(7, 'R'), (8, 'R'), (9, 'R')], [(6, 'R'), (1, 'R'), (2, 'R')],
+        [(5, 'R'), (4, 'R'), (3, 'R')], [(7, 'R'), (1, 'R'), (3, 'R')], [(5, 'R'), (1, 'R'), (9, 'R')], [(1, 'R'), (9, 'R'), (1,'L')], [(8, 'R'), (9, 'R'), (8, 'L')],  [(7, 'L'), (6, 'L'), (5, 'L')], [(8, 'L'), (1, 'L'), (4, 'L')], [(9, 'L'), (2, 'L'), (3, 'L')], [(7, 'L'), (8, 'L'), (9, 'L')], [(6, 'L'), (1, 'L'), (2, 'L')],
+        [(5, 'L'), (4, 'L'), (3, 'L')], [(7, 'L'), (1, 'L'), (3, 'L')], [(5, 'L'), (1, 'L'), (9, 'L')],[(2, 'L'), (9, 'R'), (2, 'R')]
+    ]
     triangles = [
-        [1, 2, 5], [2, 1, 4], [1, 4, 5], [2, 5, 4],
-        [6, 5, 2], [3,2,5], [2, 3, 6], [3, 6, 5],
-        [5, 4, 9], [8, 9, 4],[4,9,10],[4,5,10],[5,10,9],[5,10,11],[6,5,10],[5,6,11],[6,10,11],[8, 7, 12], [7, 12, 13], [8, 13, 12], [8, 13, 14],
-        [8, 9, 14], [9,14,13], [14, 9, 10], [12, 15, 16],
-        [13, 12, 15], [12, 13, 16],[13,16,15],[13,16,17],[14,13,16],[13,14,17],[14,17,16],[10,9,14],[8,9,13]
+        [(7, 'R'), (6, 'R'), (1, 'R')], [(8, 'R'), (1, 'R'), (6, 'R')], [(1, 'R'), (8, 'R'), (7, 'R')], [(7, 'R'), (8, 'R'), (6, 'R')], [(6, 'R'), (5, 'R'), (4, 'R')],
+        [(5, 'R'), (4, 'R'), (1, 'R')], [(4, 'R'), (1, 'R'), (6, 'R')], [(1, 'R'), (6, 'R'), (5, 'R')], [(8, 'R'), (1, 'R'), (2,'R')], [(1, 'R'), (2, 'R'), (9, 'R')], [(2, 'R'), (9, 'R'), (8, 'R')], [(9, 'R'), (8, 'R'), (1, 'R')], [(1, 'R'), (4, 'R'), (3, 'R')], [(4, 'R'), (3, 'R'), (2, 'R')], [(3, 'R'), (1, 'R'), (2, 'R')],
+        [(2, 'R'), (4, 'R'), (1, 'R')],  [(7, 'L'), (6, 'L'), (1, 'L')], [(8, 'L'), (1, 'L'), (6, 'L')], [(1, 'L'), (8, 'L'), (7, 'L')], [(7, 'L'), (8, 'L'), (6, 'L')], [(6, 'L'), (5, 'L'), (4, 'L')],
+        [(5, 'L'), (4, 'L'), (1, 'L')], [(4, 'L'), (1, 'L'), (6, 'L')], [(1, 'L'), (6, 'L'), (5, 'L')], [(8, 'L'), (1, 'L'), (2,'L')], [(1, 'L'), (2, 'L'), (9, 'L')], [(2, 'L'), (9, 'L'), (8, 'L')], [(9, 'L'), (8, 'L'), (1, 'L')], [(1, 'L'), (4, 'L'), (3, 'L')], [(4, 'L'), (3, 'L'), (2, 'L')], [(3, 'L'), (1, 'L'), (2, 'L')],
+        [(2, 'L'), (4, 'L'), (1, 'L')], 
+        
+        
+        [(2, 'L'), (9, 'R'), (8, 'R')],[(8, 'L'), (9, 'R'), (2, 'R')]
     ]
-
+    squares = [
+        [(7,'R'),(6,'R'),(1,'R'),(8,'R')], [(6,'R'),(5,'R'),(4,'R'),(1,'R')],[(8,'R'),(1,'R'),(2,'R'),(9,'R')], [(1,'R'),(4,'R'),(3,'R'),(2,'R')],
+         [(7,'L'),(6,'L'),(1,'L'),(8,'L')], [(6,'L'),(5,'L'),(4,'L'),(1,'L')],[(8,'L'),(1,'L'),(2,'L'),(9,'L')], [(1,'L'),(4,'L'),(3,'L'),(2,'L')]
+    ]
     for line in lines:
-        if all(spots[pos] == symbol for pos in line):
+        if all(spots[spot][side] == player_num for (spot,side)  in line):
             points += 3
     for triangle in triangles:
-        if all(spots[pos] == symbol for pos in triangle):
+        if all(spots[spot][side] == player_num for (spot,side) in triangle):
             points += 1
-
     for square in squares:
-        if all(spots[pos] == symbol for pos in square):
+        if all(spots[spot][side] == player_num for (spot,side) in square):
             points -= 2
-    players[player_num]['points'] = points
+    players[player_num]['score'] = points
+   
+def get_hint(player_num):
+    # Simple hint: suggest first available spot and side
+    for spot in range(1, 10):
+        for side in ['R', 'L']:
+            if spots.get(spot) and spots[spot][side] is None:
+                print(f"Hint: Try spot {spot} side {side}")
+                return
+    print("No available moves for hint.")
 
-def valid_spot_9(symbol):
-    temp_symbol = symbol
-    original_value = spots[9]
-    spots[9] = temp_symbol
+def timed_input(prompt, timeout=60):
+    result = [None]
+    def inner():
+        try:
+            result[0] = input(prompt)
+        except Exception:
+            result[0] = None
 
-    lines_involving_9 = [[1,4,9],[10,8,9],[9,10,11],[9,14,17],
-        [7, 8, 9], [3, 5, 9], [14, 4, 9], [9, 13, 15]
-    ]
+    t = threading.Thread(target=inner)
+    t.daemon = True
+    t.start()
 
-    forms_line = False
-    for line in lines_involving_9:
-        if all(spots[pos] == temp_symbol for pos in line):
-            forms_line = True
+    for remaining in range(timeout, 0, -1):
+        if result[0] is not None:
             break
+        sys.stdout.write(f"\rTime left: {remaining:2d} seconds... ")
+        sys.stdout.flush()
+        if remaining <= 10:
+            beep()
+        time.sleep(1)
+    print("\r", end="")  # Clear the timer line
 
-    spots[9] = original_value
-    return forms_line
+    if result[0] is not None:
+        return result[0]
+    else:
+        print("\nTime's up! Auto-moving for you...")
+        return None
 
-def ai_move(ai_symbol, player_symbol):
-    possible = [key for key, val in spots.items() if val == " "]
-
-    # AI tries to win
-    for move in possible:
-        if move == 9 and not valid_spot_9(ai_symbol):
-            continue
-        spots[move] = ai_symbol
-        if any(all(spots[pos] == ai_symbol for pos in line) for line in [
-            [1,2,3],[4,5,6],[7,8,9],[12,13,14],[15,16,17],
-            [1,4,7],[2,5,8],[3,6,9],[7,12,15],[8,13,16],[9,14,17],
-            [1,5,9],[3,5,7],[7,13,17],[9,13,15]
-        ]):
-            spots[move] = " "
-            return move
-        spots[move] = " "
-
-    # AI tries to block
-    for move in possible:
-        if move == 9 and not valid_spot_9(ai_symbol):
-            continue
-        spots[move] = player_symbol
-        if any(all(spots[pos] == player_symbol for pos in line) for line in [
-            [1,2,3],[4,5,6],[7,8,9],[12,13,14],[15,16,17],
-            [1,4,7],[2,5,8],[3,6,9],[7,12,15],[8,13,16],[9,14,17],
-            [1,5,9],[3,5,7],[7,13,17],[9,13,15]
-        ]):
-            spots[move] = " "
-            return move
-        spots[move] = " "
-
-    # Center
-    if 5 in possible:
-        return 5
-
-    # Corners
-    corners = [i for i in [1,3,7,9] if i in possible]
-    random.shuffle(corners)
-    for move in corners:
-        if move == 9 and not valid_spot_9(ai_symbol):
-            continue
-        return move
-
-    # Any
-    for move in possible:
-        if move == 9 and not valid_spot_9(ai_symbol):
-            continue
-        return move
-
-playing = True
+# Main Game Loop
 turn = 0
+playing = True
 
 while playing:
-    os.system('cls' if os.name == 'nt' else 'clear')
-    draw_board(spots)
+    draw_custom_board()
+    draw_score_board()
 
-    if turn == 17:
-        playing = False
-        for i in range(1,(num_players+1)/2):
-            print(player_name[i]," , pick a spot to protect")
-        protected_spot[i] = input()
-        print(int(protected_spot[i])," is protected spot by ",player_name[i])
-        if spots[int(protected_spot[i])] == f"{colors[i - 1]}P{i}\033[0m":
-            while spots[int(protected_spot[i])] == f"{colors[i - 1]}P{i}\033[0m":
-                print(b" P2 , pick a different spot")
-                protected_spot[i] = input()
+    current_player = check_turn(turn)
+    print(f"\nIt's {players[current_player]['name']}'s turn! (Hints used: {players[current_player]['hints_used']}/3)")
 
-        for j in range(((num_players+1)/2)+1,num_players+1):
-            print(player_name[i]," , pick a spot to remove other than the protected one")
-            removed_spot[j] = input()
-
-            if int(protected_spot) == int(removed_spot[j]) or spots[int(removed_spot[j])] == f"{colors[j- 1]}P{j}\033[0m":
-                while protected_spot == removed_spot[j] or spots[int(removed_spot[j])] == f"{colors[j - 1]}P{j}\033[0m":
-                    print(player_name[j]," , pick a different spot")
-                    removed_spot[j] = input()
-                    spots[int(removed_spot[j])] = "-----"
-        draw_board(spots)
-        print("\nGame End Phase!")
-        for i in range(1, num_players + 1):
-            TallyPoints(i)
-        for i in range(1, num_players + 1):
-            print(f"{players[i]['name']} (P{i}): {players[i]['points']} Points")
-        max_points = max(players[i]['points'] for i in range(1, num_players + 1))
-        winners = [players[i]['name'] for i in range(1, num_players + 1) if players[i]['points'] == max_points]
-        if len(winners) == 1:
-            print(f"Winner: {winners[0]}!")
+    # If it's the last turn and Spot 9 is completely empty, auto-assign it
+    if turn == 16:
+        if spots[9]["R"] is None and spots[9]["L"] is None:
+            print(f"\nAuto-assigning Spot 9 to {players[current_player]['name']} (last turn).")
+            spots[9]["R"] = current_player
+            spots[9]["L"] = current_player
+            move_history.append((9, "R"))
+            move_history.append((9, "L"))
+            update_score(current_player)
+            turn += 1
+            input("Spot 9 assigned. Press Enter to continue...")
+            continue
         else:
-            print("It's a tie between:", ", ".join(winners))
-        break
-
-    symbol, current_player = check_turn(turn)
-    print(players[current_player]['name'] + f" (P{current_player})'s turn:")
-
-    if ai_player == current_player:
-        player_symbol = players[1]['symbol']
-        ai_symbol = players[ai_player]['symbol']
-        choice = ai_move(ai_symbol, player_symbol)
-        print(f"AI picks spot {choice}")
-    else:
-        print("Pick your spot or press 's' to check score:")
-        choice = input()
-
-        if choice == 's':
-            for i in range(1, num_players + 1):
-                TallyPoints(i)
-            for i in range(1, num_players + 1):
-                print(f"{players[i]['name']} (P{i}): {players[i]['points']} Points")
+            print("\nSpot 9 is now protected and locked.")
+            protected_spot_9 = True
+            turn += 1
             input("Press Enter to continue...")
             continue
-        elif choice.isdigit() and int(choice) in spots:
-            choice = int(choice)
-            if choice == 9 and not valid_spot_9(symbol):
-                print("Spot 9 requires forming a line! Press Enter to continue.")
-                input()
-                continue
-        else:
-            print("Invalid input. Press Enter to continue.")
-            input()
-            continue
 
-    if (spots[choice] not in [players[i]['symbol'] for i in range(1, num_players + 1)]):
-        spots[choice] = symbol
-        turn += 1
+    # Only show Spot 9 claim prompt if BOTH sides are free
+    if spots[9]["R"] is None and spots[9]["L"] is None:
+        try_spot9 = timed_input("Do you want to claim Spot 9? (y/n or 'hint'): ").strip().lower()
+        if try_spot9 == 'hint':
+            if players[current_player]['hints_used'] < 3:
+                get_hint(current_player)
+                players[current_player]['hints_used'] += 1
+            else:
+                print("No hints left!")
+            continue
+        if try_spot9 is None or try_spot9 == '':
+            # Timeout or empty, auto-move: pick first available side
+            for side_9 in ['R', 'L']:
+                if spots[9][side_9] is None:
+                    spots[9][side_9] = current_player
+                    move_history.append((9, side_9))
+                    update_score(current_player)
+                    turn += 1
+                    print(f"Auto-move: Spot 9 side {side_9} taken.")
+                    input("Press Enter to continue...")
+                    break
+            continue
+        if try_spot9 == 'y':
+            side_9 = timed_input("Enter side for Spot 9 (R or L or 'hint'): ").strip().upper()
+            if side_9.lower() == 'hint':
+                if players[current_player]['hints_used'] < 3:
+                    get_hint(current_player)
+                    players[current_player]['hints_used'] += 1
+                else:
+                    print("No hints left!")
+                continue
+            if side_9 is None or side_9 == '':
+                # Timeout or empty, auto-pick
+                for s in ['R', 'L']:
+                    if spots[9][s] is None:
+                        side_9 = s
+                        break
+            if side_9 not in ['R', 'L']:
+                print("Invalid side.")
+                beep()
+                input("Press Enter to continue...")
+                continue
+            spots[9][side_9] = current_player
+            move_history.append((9, side_9))
+            update_score(current_player)
+            turn += 1
+            input("Spot 9 claimed. Press Enter to continue...")
+            continue
+        elif try_spot9 == 'n':
+            print("You chose not to claim Spot 9.")
+            side = input("Enter side (R for right, or L for left): ").strip().upper()
+            if side not in ['R', 'L']:
+                print("Invalid side.")
+                beep()
+                input("Press Enter to continue...")
+                continue
+            spot_input = input("Enter spot number (1-8) or 'b' to back: ").strip()
+            if spot_input.lower() == 'b':
+                if move_history:
+                    last_spot, last_side = move_history.pop()
+                    spots[last_spot][last_side] = None
+                    turn -= 1
+                    print("Last move undone.")
+                else:
+                    print("Nothing to undo.")
+                    beep()
+                input("Press Enter to continue...")
+                continue
+            elif spot_input.isdigit():
+                spot = int(spot_input)
+                if spot not in range(1, 9):
+                    print("Invalid spot.")
+                    beep()
+                    input("Press Enter to continue...")
+                    continue
+                if spots[spot][side] is not None:
+                    print("That side of the spot is already taken.")
+                    beep()
+                    input("Press Enter to continue...")
+                    continue
+                spots[spot][side] = current_player
+                move_history.append((spot, side))
+                update_score(current_player)
+                turn += 1  # Advance turn only after a successful move
+                input("Move recorded. Press Enter to continue...")
+                continue
+            else:
+                print("Invalid input.")
+                beep()
+                input("Press Enter to continue...")
+                continue
     else:
-        if ai_player == current_player:
+        # Spot 9 is partially or fully occupied, skip prompt and go to regular spot logic
+        pass
+
+    # Regular spot logic (for both branches above)
+    side = timed_input("Enter side (R for right, or L for left, or 'hint'): ", 60)
+    if side is None or side.strip() == '':
+        # Timeout or empty, auto-pick first available side and spot
+        auto_found = False
+        for s in ['R', 'L']:
+            for spot in range(1, 9):
+                if spots[spot][s] is None:
+                    side = s
+                    spot_input = str(spot)
+                    auto_found = True
+                    print(f"Auto-move: Spot {spot} side {side} taken.")
+                    break
+            if auto_found:
+                break
+        if not auto_found:
+            print("No available moves.")
+            continue
+    elif side.lower() == 'hint':
+        if players[current_player]['hints_used'] < 3:
+            get_hint(current_player)
+            players[current_player]['hints_used'] += 1
+        else:
+            print("No hints left!")
+        continue
+    elif side not in ['R', 'L']:
+        print("Invalid side.")
+        beep()
+        input("Press Enter to continue...")
+        continue
+    else:
+        spot_input = timed_input("Enter spot number (1-8) or 'b' to back or 'hint': ", 60)
+        if spot_input is None or spot_input.strip() == '':
+            # Timeout or empty, auto-pick first available spot for chosen side
+            auto_found = False
+            for spot in range(1, 9):
+                if spots[spot][side] is None:
+                    spot_input = str(spot)
+                    auto_found = True
+                    print(f"Auto-move: Spot {spot} side {side} taken.")
+                    break
+            if not auto_found:
+                print("No available moves.")
+                continue
+        elif spot_input.lower() == 'hint':
+            if players[current_player]['hints_used'] < 3:
+                get_hint(current_player)
+                players[current_player]['hints_used'] += 1
+            else:
+                print("No hints left!")
+            continue
+        elif spot_input.lower() == 'b':
+            if move_history:
+                last_spot, last_side = move_history.pop()
+                spots[last_spot][last_side] = None
+                turn -= 1
+                print("Last move undone.")
+            else:
+                print("Nothing to undo.")
+                beep()
+            input("Press Enter to continue...")
+            continue
+        elif spot_input.isdigit():
+            spot = int(spot_input)
+            if spot not in range(1, 9):
+                print("Invalid spot.")
+                beep()
+                input("Press Enter to continue...")
+                continue
+            if spots[spot][side] is not None:
+                print("That side of the spot is already taken.")
+                beep()
+                input("Press Enter to continue...")
+                continue
+            spots[spot][side] = current_player
+            move_history.append((spot, side))
+            update_score(current_player)
+            turn += 1
+            input("Move recorded. Press Enter to continue...")
             continue
         else:
-            print("Spot taken. Press Enter to pick again.")
-            input()
+            print("Invalid input.")
+            beep()
+            input("Press Enter to continue...")
+            continue
+    
+if turn == 17:
+    print("\n--- FINAL BALANCE PHASE ---\n")
+    spot_counts = count_player_spots()
+    max_spots = max(spot_counts.values())
+    min_spots = min(spot_counts.values())
+
+    if max_spots == min_spots:
+        print("All players already have equal spots.")
+    else:
+        protected = {}
+        # 2 Players
+        if num_players == 2:
+            p1 = 1
+            p2 = 2
+            for i in range(1, 18):
+                for side in ['R', 'L']:
+                    if spots[i][side] == p1:
+                        protected[p1] = (i, side)
+                        print(f"{players[p1]['name']} protects spot {i} side {side}.")
+                        break
+                if p1 in protected:
+                    break
+            for i in range(1, 18):
+                for side in ['R', 'L']:
+                    if (i, side) != protected[p1] and spots[i][side] == p1:
+                        spots[i][side] = None
+                        print(f"{players[p2]['name']} removes {players[p1]['name']}'s spot {i}-{side}")
+                        break
+                else:
+                    continue
+                break
+
+        # 3 Players
+        elif num_players == 3:
+            for p in [1, 2]:
+                for i in range(1, 18):
+                    for side in ['R', 'L']:
+                        if spots[i][side] == p:
+                            protected[p] = (i, side)
+                            print(f"{players[p]['name']} protects spot {i} side {side}.")
+                            break
+                    if p in protected:
+                        break
+            for target in [1, 2]:
+                for i in range(1, 18):
+                    for side in ['R', 'L']:
+                        if (i, side) != protected[target] and spots[i][side] == target:
+                            spots[i][side] = None
+                            print(f"{players[3]['name']} removes {players[target]['name']}'s spot {i}-{side}")
+                            break
+                else:
+                    continue
+                break
+
+        # 4 Players
+        elif num_players == 4:
+            p1 = 1
+            p2 = 2
+            for i in range(1, 18):
+                for side in ['R', 'L']:
+                    if spots[i][side] == p1:
+                        protected[p1] = (i, side)
+                        print(f"{players[p1]['name']} protects spot {i} side {side}.")
+                        break
+                if p1 in protected:
+                    break
+            for i in range(1, 18):
+                for side in ['R', 'L']:
+                    if (i, side) != protected[p1] and spots[i][side] == p1:
+                        spots[i][side] = None
+                        print(f"{players[p2]['name']} removes {players[p1]['name']}'s spot {i}-{side}")
+                        break
+                else:
+                    continue
+                break
+
+        # 5 Players
+        elif num_players == 5:
+            for p in [1, 2]:
+                for i in range(1, 18):
+                    for side in ['R', 'L']:
+                        if spots[i][side] == p:
+                            protected[p] = (i, side)
+                            print(f"{players[p]['name']} protects spot {i} side {side}.")
+                            break
+                    if p in protected:
+                        break
+            for i in range(1, 18):
+                for side in ['R', 'L']:
+                    if (i, side) != protected[1] and spots[i][side] == 1:
+                        spots[i][side] = None
+                        print(f"{players[3]['name']} removes {players[1]['name']}'s spot {i}-{side}")
+                        break
+                else:
+                    continue
+                break
+            for i in range(1, 18):
+                for side in ['R', 'L']:
+                    if (i, side) != protected[2] and spots[i][side] == 2:
+                        spots[i][side] = None
+                        print(f"{players[4]['name']} removes {players[2]['name']}'s spot {i}-{side}")
+                        break
+                else:
+                    continue
+                break
+
+    # Final Score Recalculation
+    for pid in players:
+        update_score(pid)
+
+    # Winner Declaration
+    scores = {pid: players[pid]['score'] for pid in players}
+    max_score = max(scores.values())
+    winners = [pid for pid, s in scores.items() if s == max_score]
+
+    print("\n--- FINAL SCORES ---")
+    draw_score_board()
+
+    if len(winners) == 1:
+        winner = winners[0]
+        print(f"\n🏆 Winner is {players[winner]['name']} with {max_score} points!")
+    else:
+        print("\n🤝 It's a tie between:")
+        for pid in winners:
+            print(f" - {players[pid]['name']}")
+
+    input("\nPress Enter to exit.")
+    playing = False
+    sys.exit(0)
+
+
